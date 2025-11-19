@@ -1,0 +1,172 @@
+
+---
+title: "2005 World Series Prediction with Pitching rotation and Bullpen averages and trained defensive stats from 2000 - 2004 with addition of regualar season stats 2005 "
+format: html
+editor: visual
+---
+
+## 2005 World Series Prediction Pitching Rotation and Bullpen
+
+```{r}
+################################################
+### 1. Logistic helpers
+################################################
+logit <- function(p) log(p / (1 - p))
+#to help move from probability to a more linear space so you when you are making adjustments
+#the probability will not exceed 1. It converts probability range 0 - 1 into log odds range to 
+#add adjustments safely.
+inv_logit <- function(x) 1 / (1 + exp(-x))
+#this is just converting the logit back to a probability. 
+
+
+##############################################################
+### 2. BASELINE probability from ML simple model
+##############################################################
+# IMPORTANT: replace this with your actual ML prediction from simple model
+
+ws_neutral <- ws_neutral        # keep your model’s output here
+                                # you get ws_neutral by running the simple model
+                                # that has the batting averages only
+
+###############################################################
+### 3. BULLPEN ERA ADJUSTMENT (2005 regular season)
+###############################################################
+# Replace these with your bullpen ERA values (these are from google)
+ws_bullpen_era  <- 3.12
+hou_bullpen_era <- 3.51
+
+bullpen_logit_adj <- log(hou_bullpen_era / ws_bullpen_era)
+#measuring stregth of bullpen
+#if it is > 1, WS is better
+#if it is < 1, Houston is better
+#if it is 1, both are equal
+#this is telling you how many more or fewer runs should be expected.
+#changing to log helps the monte carlo run better and more stable
+
+
+ws_neutral_logit <- logit(ws_neutral)
+ws_adj_logit <- ws_neutral_logit + bullpen_logit_adj
+ws_adj_base <- inv_logit(ws_adj_logit)
+
+
+################################################################
+### 4. STARTING ROTATIONS (2005 regular season ERA)
+################################################################
+# Replace these with your ERA values
+ws_rotation_era <- c(
+  Contreras = 3.61,
+  Buehrle   = 3.12,
+  Garland   = 3.50,
+  Garcia    = 4.00
+)
+
+hou_rotation_era <- c(
+  Clemens = 1.87,
+  Pettitte = 2.39,
+  Oswalt   = 2.94,
+  Backe    = 4.30
+)
+
+
+##############################################################
+### 5. FUNCTION: Game-specific win probability
+##############################################################
+ws_game_prob <- function(game_index,
+                         base_p,
+                         ws_rotation_era,
+                         hou_rotation_era,
+                         starter_scale = 0.50) {
+  
+  ws_starter_name  <- names(ws_rotation_era)[((game_index - 1) %% length(ws_rotation_era)) + 1]
+  hou_starter_name <- names(hou_rotation_era)[((game_index - 1) %% length(hou_rotation_era)) + 1]
+  
+  ws_era  <- ws_rotation_era[ws_starter_name]
+  hou_era <- hou_rotation_era[hou_starter_name]
+  
+  base_logit <- logit(base_p)
+  starter_term <- starter_scale * log(hou_era / ws_era)
+  
+  p_ws <- inv_logit(base_logit + starter_term)
+  
+  data.frame(
+    game = game_index,
+    ws_starter = ws_starter_name,
+    hou_starter = hou_starter_name,
+    p_ws = p_ws
+  )
+}
+
+
+###############################################################
+### 6. Generate per-game probabilities (Games 1–7)
+###############################################################
+per_game_probs <- do.call(
+  rbind,
+  lapply(1:7, function(g) {
+    ws_game_prob(
+      game_index = g,
+      base_p = ws_adj_base,
+      ws_rotation_era = ws_rotation_era,
+      hou_rotation_era = hou_rotation_era,
+      starter_scale = 0.50
+    )
+  })
+)
+
+per_game_probs$p_ws_round <- round(per_game_probs$p_ws, 3)
+print(per_game_probs)
+
+
+#############################################################
+### 7. MONTE CARLO — Best-of-7 Series
+#############################################################
+simulate_series <- function(p_vec, n_sims = 20000) {
+  results <- data.frame(
+    games = integer(n_sims),
+    winner = character(n_sims),
+    stringsAsFactors = FALSE
+  )
+  
+  for (i in 1:n_sims) {
+    ws_wins <- 0
+    hou_wins <- 0
+    game_num <- 1
+    
+    while (ws_wins < 4 && hou_wins < 4) {
+      p <- p_vec[((game_num - 1) %% length(p_vec)) + 1]
+      outcome <- rbinom(1, 1, p)
+      
+      if (outcome == 1) ws_wins <- ws_wins + 1 else hou_wins <- hou_wins + 1
+      
+      game_num <- game_num + 1
+    }
+    
+    results$games[i] <- game_num - 1
+    results$winner[i] <- ifelse(ws_wins == 4, "White Sox", "Astros")
+  }
+  
+  results
+}
+
+# Run Monte Carlo
+sim_results <- simulate_series(per_game_probs$p_ws, n_sims = 20000)
+
+
+###############################################################
+### 8. SUMMARY OUTPUT
+###############################################################
+ws_win_prob <- mean(sim_results$winner == "White Sox")
+series_len_dist <- prop.table(table(sim_results$games[sim_results$winner == "White Sox"]))
+
+cat("\n-------------------------\n")
+cat("White Sox Win Prob:", round(ws_win_prob, 3), "\n")
+cat("Distribution of WS series wins:\n")
+print(round(series_len_dist, 3))
+
+
+###############################################################
+### 9. EXPORT TO CSV
+###############################################################
+write.csv(sim_results, "world_series_monte_carlo_results.csv", row.names = FALSE)
+
+```
